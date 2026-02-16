@@ -471,17 +471,20 @@ class OrderCalculator:
                 buy_price_yes = max(buy_price_yes, mid_price_yes - max_spread_dollars)
                 buy_price_no = max(buy_price_no, mid_price_no - max_spread_dollars)
             else:
-                spread_cents = settings.spread_percent / 100
-                buy_price_yes = mid_price_yes - spread_cents
-                buy_price_no = mid_price_no - spread_cents
+                # ИСПРАВЛЕНИЕ: spread_percent - это ПРОЦЕНТ, а не абсолютное значение в центах!
+                # Правильная формула: цена = mid_price * (1 - процент/100)
+                # Например: mid_price = 0.50, spread = 3% -> цена = 0.50 * (1 - 0.03) = 0.485
+                spread_fraction = settings.spread_percent / 100.0  # процент → доля
+                buy_price_yes = mid_price_yes * (1 - spread_fraction)
+                buy_price_no = mid_price_no * (1 - spread_fraction)
 
             # 2. Округляем и применяем лимиты
             buy_price_yes = OrderCalculator.round_price_by_precision(buy_price_yes, decimal_precision)
             buy_price_no = OrderCalculator.round_price_by_precision(buy_price_no, decimal_precision)
-            
+
             buy_price_yes = max(min(buy_price_yes, 0.999), MIN_ORDER_PRICE)
             buy_price_no = max(min(buy_price_no, 0.999), MIN_ORDER_PRICE)
-            
+
             # Определяем размер позиции (одинаковый для Yes и No)
             if settings.position_size_usdt is not None:
                 # Размер в USDT - рассчитываем shares для Yes
@@ -489,54 +492,54 @@ class OrderCalculator:
                     settings.position_size_usdt,
                     buy_price_yes
                 )
-                
+
                 # Корректируем до минимальной суммы
                 buy_shares_yes = OrderCalculator.adjust_to_min_order_value(
                     buy_shares_yes,
                     buy_price_yes
                 )
-                
+
                 # Округляем до десятых с проверкой минимальной суммы
                 buy_shares_yes = OrderCalculator.round_shares_to_tenths(
                     buy_shares_yes,
                     buy_price_yes
                 )
-                
+
                 # Рассчитываем итоговую стоимость для Yes
                 buy_value_yes_usd = OrderCalculator.calculate_usdt_from_shares(
                     buy_shares_yes,
                     buy_price_yes
                 )
-                
+
                 # Для No используем тот же размер в USDT
                 buy_shares_no = OrderCalculator.calculate_shares_from_usdt(
                     settings.position_size_usdt,
                     buy_price_no
                 )
-                
+
                 # Корректируем до минимальной суммы
                 buy_shares_no = OrderCalculator.adjust_to_min_order_value(
                     buy_shares_no,
                     buy_price_no
                 )
-                
+
                 # Округляем до десятых с проверкой минимальной суммы
                 buy_shares_no = OrderCalculator.round_shares_to_tenths(
                     buy_shares_no,
                     buy_price_no
                 )
-                
+
                 # Рассчитываем итоговую стоимость для No
                 buy_value_no_usd = OrderCalculator.calculate_usdt_from_shares(
                     buy_shares_no,
                     buy_price_no
                 )
-                
+
             elif settings.position_size_shares is not None:
                 # Размер в shares - одинаковый для Yes и No
                 buy_shares_yes = settings.position_size_shares
                 buy_shares_no = settings.position_size_shares
-                
+
                 # Корректируем до минимальной суммы
                 buy_shares_yes = OrderCalculator.adjust_to_min_order_value(
                     buy_shares_yes,
@@ -546,7 +549,7 @@ class OrderCalculator:
                     buy_shares_no,
                     buy_price_no
                 )
-                
+
                 # Округляем до десятых с проверкой минимальной суммы
                 buy_shares_yes = OrderCalculator.round_shares_to_tenths(
                     buy_shares_yes,
@@ -556,7 +559,7 @@ class OrderCalculator:
                     buy_shares_no,
                     buy_price_no
                 )
-                
+
                 # Рассчитываем итоговую стоимость
                 buy_value_yes_usd = OrderCalculator.calculate_usdt_from_shares(
                     buy_shares_yes,
@@ -568,71 +571,71 @@ class OrderCalculator:
                 )
             else:
                 return None
-            
+
             # Общая стоимость = максимальное значение из Yes и No
             # (потому что только один из ордеров исполнится, а не оба)
             total_value_usd = max(buy_value_yes_usd, buy_value_no_usd)
-            
+
             # Рассчитываем ликвидность перед нашими ордерами
             # Передаем информацию о наших активных ордерах для вычитания нашей ликвидности
             # (если ордера уже выставлены)
             our_active_order_yes = None
             our_active_order_no = None
-            
+
             if active_orders:
                 our_active_order_yes = active_orders.get("yes")
                 our_active_order_no = active_orders.get("no")
-            
+
             liquidity_yes = OrderCalculator.calculate_liquidity_before_price(
                 orderbook, buy_price_yes, "yes", our_active_order_yes
             )
             liquidity_no = OrderCalculator.calculate_liquidity_before_price(
                 orderbook, buy_price_no, "no", our_active_order_no
             )
-            
+
             # Проверяем, достаточна ли ликвидность для выставления ордеров
             # Если включен АВТОСПРЕД, то минимальным порогом становится ЦЕЛЕВАЯ ликвидность
             if settings.auto_spread_enabled:
                 min_liquidity = settings.target_liquidity or 1000.0
             else:
                 min_liquidity = settings.min_liquidity_usdt or 0.0
-                
+
             can_place_yes_liquidity = liquidity_yes >= min_liquidity
             can_place_no_liquidity = liquidity_no >= min_liquidity
-            
+
             # Проверяем минимальный спред (только если цена ордера минимальная - 0.001)
             # Пользователь вводит значение в центах, конвертируем в доллары для сравнения
             min_spread_cents = settings.min_spread or 0.2
             min_spread_dollars = min_spread_cents / 100.0  # Конвертируем центы в доллары
             MIN_PRICE = 0.001  # Минимальная цена ордера
-            
+
             can_place_yes_spread = True
             can_place_no_spread = True
-            
+
             # Проверяем спред для Yes ордера
             if buy_price_yes <= MIN_PRICE:
                 # Ордер по минимальной цене, проверяем спред (в долларах)
                 spread_yes = abs(mid_price_yes - buy_price_yes)
                 if spread_yes < min_spread_dollars:
                     can_place_yes_spread = False
-            
+
             # Проверяем спред для No ордера
             if buy_price_no <= MIN_PRICE:
                 # Ордер по минимальной цене, проверяем спред (в долларах)
                 spread_no = abs(mid_price_no - buy_price_no)
                 if spread_no < min_spread_dollars:
                     can_place_no_spread = False
-            
+
             # Вычисляем спреды для отображения (если еще не вычислены)
             if 'spread_yes' not in locals():
                 spread_yes = abs(mid_price_yes - buy_price_yes) if mid_price_yes else 0.0
             if 'spread_no' not in locals():
                 spread_no = abs(mid_price_no - buy_price_no) if mid_price_no else 0.0
-            
+
             # Финальное решение: можно выставить ордер только если прошли обе проверки
             can_place_yes = can_place_yes_liquidity and can_place_yes_spread
             can_place_no = can_place_no_liquidity and can_place_no_spread
-            
+
             return {
                 "mid_price_yes": mid_price_yes,
                 "mid_price_no": mid_price_no,
@@ -662,7 +665,7 @@ class OrderCalculator:
                 "can_place_yes_spread": can_place_yes_spread,
                 "can_place_no_spread": can_place_no_spread
             }
-        
+
         except Exception as e:
             error_msg = f"✗ Ошибка расчета лимитных ордеров: {e}"
             print(error_msg)
